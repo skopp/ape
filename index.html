@@ -1,0 +1,47 @@
+<!doctype html>
+<html>
+  <head>
+    <script type="text/javascript" src="https://static.firebase.com/v0/firebase.js"></script>
+    <script type="text/javascript" src="ape.js"></script>
+    <style type="text/css">
+      #marklet {
+        padding: 0.3em;
+        font-size: 120%;
+        border: 2px outset #999;
+        background-color: #ddd;
+        border-radius: 5px;
+        cursor: move;
+      }
+    </style>
+    <title>Ape: BrowserMirror powered by Firebase!</title>
+  </head>
+  <body>
+    <div>
+      Ape is a modification of
+      <a href="http://github.com/mozilla/browsermirror/">BrowserMirror</a>,
+      built to use <a href="http://firebase.com">Firebase</a> as the data
+      backend. This tool can be used to share your browsing session with
+      someone else.
+    </div>
+
+    <h2>To install:</h2>
+    <div>
+      Click and drag this link into your bookmark toolbar:
+      <span style="margin: 1em">
+        <a id="marklet">Ape</a>
+      </span>
+    </div>
+
+    <h2>To use:</h2>
+    <div>
+      Simply click the bookmarklet when you're on a page you want to share.
+      You'll get an alert with a link that you can share with others, or just
+      give them your session ID. Opening the link or providing the session ID
+      on the Ape website will allow that person to see what you're seeing!
+    </div>
+
+    <script type="text/javascript">
+      document.getElementById("marklet").href = "javascript:(function(){window.runMarklet=true;var n='ape-script';var s=document.getElementById(n);if(s)document.body.removeChild(s);s=document.createElement('script');s.src='" + APE_PATH + "/ape.js';s.id=n;var f = document.createElement('script');f.src='https://static.firebase.com/v0/firebase.js';document.body.appendChild(f);document.body.appendChild(s);})()";
+    </script>
+  </body>
+</html>
