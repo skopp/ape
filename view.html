@@ -1,0 +1,20 @@
+<!doctype html>
+<html>
+  <head>
+    <script type="text/javascript" src="https://static.firebase.com/v0/firebase.js"></script>
+    <script type="text/javascript" src="ape.js"></script>
+    <title>Ape: BrowserMirror powered by Firebase!</title>
+  </head>
+  <body>
+    <h2>Please wait while we attempt to connect to your session...</h2>
+    <script type="text/javascript">
+      if (window.location.search) {
+        var val = window.location.search.split("?id=");
+        var client = new ApeClient(parseInt(val[1], 10));
+        client.start();
+      } else {
+        alert("Invalid session ID provided!");
+      }
+    </script>
+  </body>
+</html>

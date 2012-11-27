@@ -104,9 +104,11 @@ Ape.prototype = {
         }
       }
     }
+
     if (el.tagName == "TEXTAREA") {
       attrs.value = el.value;
     }
+  
     return attrs;
   },
 
@@ -114,6 +116,7 @@ Ape.prototype = {
   // an element or a string, with no two adjacent strings.
   _serializeChildren: function(el) {
     var ret = [];
+
     var children = el.childNodes;
     for (var i = 0; i < children.length; i++) {
       var child = children[i];
@@ -204,16 +207,17 @@ function ApeClient(id) {
 
   this._init = false;
   this._base = new Firebase(FIREBASE_URL + "/" + id);
-
-  this._base.on("value", this._processEvent);
 }
 ApeClient.prototype = {
-  _processEvent: function(snapshot) {
-    if (!this._init) {
-      // First time, render document.
-      this._renderDoc(snapshot.val());
-      this._init = true;
-    }
+  start: function() {
+    var self = this;
+    this._base.on("value", function(snapshot) {
+      if (!self._init) {
+        // First time, render document.
+        self._renderDoc(snapshot.val());
+        self._init = true;
+      }
+    });
   },
 
   _renderDoc: function(doc) {
@@ -227,7 +231,7 @@ ApeClient.prototype = {
     this._setElement(document.body, doc.body);
   },
 
-  _setElement: function (el, data) {
+  _setElement: function(el, data) {
     var children = data.children;
 
     if (el.tagName != data.name) {
@@ -235,7 +239,7 @@ ApeClient.prototype = {
       return;
     }
 
-    this.setAttributes(el, data.attributes);
+    this._setAttributes(el, data.attributes);
     el.jsmirrorId = data.id;
 
     var offset = 0;
@@ -283,10 +287,11 @@ ApeClient.prototype = {
         el.value = attrs[i];
       }
     }
-    if (el.attributes.length > len) {
+
+    if (el.attributes && (el.attributes.length > len)) {
       // There must be an extra attribute to be deleted.
       var toDelete = [];
-      for (i=0; i<el.attributes.length; i++) {
+      for (i = 0; i < el.attributes.length; i++) {
         if (!attrs.hasOwnProperty(el.attributes[i].name)) {
           toDelete.push(el.attributes[i].name);
         }
@@ -297,9 +302,9 @@ ApeClient.prototype = {
     }
   },
 
-  _setBase: function (href) {
+  _setBase: function(href) {
     var existing = document.getElementsByTagName("base");
-    for (var i=0; i<existing.length; i++) {
+    for (var i = 0; i < existing.length; i++) {
       existing[i].parentNode.removeChild(existing[i]);
     }
     var base = document.createElement("base");
@@ -307,7 +312,7 @@ ApeClient.prototype = {
     document.head.appendChild(base);
   },
 
-  _deserializeElement: function (data) {
+  _deserializeElement: function(data) {
     if (typeof data == "string") {
       return document.createTextNode(data);
     }
@@ -334,16 +339,14 @@ ApeClient.prototype = {
       }
     }
 
-    if (children === undefined) {
-      throw new Error("Bad children list!");
-    }
-
-    for (var i = 0; i < children.length; i++) {
-      var o = children[i];
-      if (typeof o == "string") {
-        el.appendChild(document.createTextNode(o));
-      } else {
-        el.appendChild(this._deserializeElement(o));
+    if (children) {
+      for (var i = 0; i < children.length; i++) {
+        var o = children[i];
+        if (typeof o == "string") {
+          el.appendChild(document.createTextNode(o));
+        } else {
+          el.appendChild(this._deserializeElement(o));
+        }
       }
     }
 
@@ -363,7 +366,7 @@ function runServer() {
     if (id) {
       prompt(
         "Your session ID is " + id + ", share the URL:",
-        APE_PATH + "/index.html?view=" + id
+        APE_PATH + "/view.html?id=" + id
       );
     } else {
       alert("Sorry, the share failed!");
@@ -375,4 +378,3 @@ if (window.runMarklet) {
   // Signal to start in master mode.
   runServer(); 
 }
-
