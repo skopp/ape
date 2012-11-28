@@ -4,6 +4,7 @@ const FIREBASE_URL = "https://ape.firebaseIO.com";
 
 function Ape(doc) {
   this._doc = doc;
+  this._current = null;
   this._counter = 1000;
 }
 Ape.prototype = {
@@ -50,7 +51,6 @@ Ape.prototype = {
 
     return false;
   },
-
 
   // Similar to BrowserMirror, each element is an object of the following form:
   // { name: tagName, id: jsmirrorId, attributes: {...}, children: [...] }
@@ -142,12 +142,14 @@ Ape.prototype = {
   },
 
   serializeDocument: function() {
-    return {
+    this._current = {
       href: location.href,
       html: this._serializeAttributes(this._doc.childNodes[0]), // <html>
       head: this._serializeElement(this._doc.head), // <head>
       body: this._serializeElement(this._doc.body), // <body>
+      changes: [] // Queue of changes
     };
+    return this._current;
   },
 
 };
@@ -189,9 +191,19 @@ ApeServer.prototype = {
 
     var self = this;
     this._ape = new Ape(document);
+
+    // First time upload of document.
     this._base.set(this._ape.serializeDocument(), function(success) {
       if (success) {
+        // Setup timer to watch for subsequent changes.
         self._cb(self._id);
+        setInterval(function() {
+          var old = JSON.stringify(self._ape._current);
+          var update = self._ape.serializeDocument();
+          if (JSON.stringify(update) != old) {
+            self._base.set(update); 
+          }
+        }, 500);
       } else {
         self._cb();
       }
@@ -205,18 +217,14 @@ function ApeClient(id) {
     throw new Error("Firebase not loaded, did you include the JS library?");
   }
 
-  this._init = false;
   this._base = new Firebase(FIREBASE_URL + "/" + id);
 }
 ApeClient.prototype = {
   start: function() {
     var self = this;
     this._base.on("value", function(snapshot) {
-      if (!self._init) {
-        // First time, render document.
-        self._renderDoc(snapshot.val());
-        self._init = true;
-      }
+      // Works for both first time rendering and updates.
+      self._renderDoc(snapshot.val());
     });
   },
 
@@ -242,40 +250,48 @@ ApeClient.prototype = {
     this._setAttributes(el, data.attributes);
     el.jsmirrorId = data.id;
 
-    var offset = 0;
-    for (var i = 0; i < children.length; i++) {
-      var childIndex = i + offset;
-      var existing = el.childNodes[childIndex];
-      if (!existing) {
-        el.appendChild(this._deserializeElement(children[i]));
-      } else if (existing.jsmirrorHide) {
-        offset++;
-        i--;
-        continue;
-      } else if (typeof children[i] == "string") {
-        if (existing.nodeType != document.TEXT_NODE) {
-          existing.parentNode.replaceChild(
-            document.createTextNode(children[i]), existing
-          );
+    if (children) {
+      var offset = 0;
+      for (var i = 0; i < children.length; i++) {
+        var childIndex = i + offset;
+        var existing = el.childNodes[childIndex];
+        if (!existing) {
+          el.appendChild(this._deserializeElement(children[i]));
+        } else if (existing.jsmirrorHide) {
+          offset++;
+          i--;
+          continue;
+        } else if (typeof children[i] == "string") {
+          if (existing.nodeType != document.TEXT_NODE) {
+            existing.parentNode.replaceChild(
+              document.createTextNode(children[i]), existing
+            );
+          } else {
+            existing.nodeValue = children[i];
+          }
         } else {
-          existing.nodeValue = children[i];
+          this._setElement(existing, children[i]);
         }
-      } else {
-        this._setElement(existing, children[i]);
       }
     }
 
-    while (el.childNodes.length - offset > children.length) {
-      var node = el.childNodes[children.length + offset];
-      if (node.jsmirrorHide) {
-        offset++;
-        continue;
+    if (el.childNodes && children) {
+      while (el.childNodes.length - offset > children.length) {
+        var node = el.childNodes[children.length + offset];
+        if (node.jsmirrorHide) {
+          offset++;
+          continue;
+        }
+        el.removeChild(node);
       }
-      el.removeChild(node);
     }
   },
 
   _setAttributes: function(el, attrs) {
+    if (!attrs || typeof attrs.hasOwnProperty != "function") {
+      return;
+    }
+
     var len = 0;
     for (var i in attrs) {
       if (!attrs.hasOwnProperty(i)) {
