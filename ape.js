@@ -298,7 +298,10 @@ ApeClient.prototype = {
         continue;
       }
       len++;
-      el.setAttribute(i, attrs[i]);
+
+      if (el.setAttribute) {
+        el.setAttribute(i, attrs[i]);
+      }
       if (i == "value") {
         el.value = attrs[i];
       }
@@ -350,7 +353,7 @@ ApeClient.prototype = {
 
     el = document.createElement(data.name);
     for (var i in attrs) {
-      if (attrs.hasOwnProperty(i)) {
+      if (attrs.hasOwnProperty(i) && el.setAttribute) {
         el.setAttribute(i, attrs[i]);
       }
     }
