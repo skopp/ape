@@ -14,6 +14,6 @@ broadcasting side will show up for every viewer.
 Quick Start
 -----------
 
-    $ git clone git@github.com:mozilla/browsermirror.git
-    $ $EDITOR ape.js // Change APE_PATH to the path where you intend to host.
+    $ git clone https://github.com/firebase/ape.git
+    $ $EDITOR ape/ape.js // Change APE_PATH to the path where you intend to host.
     $ $BROWSER $APE_PATH/index.html // Serve off http or https for best results.
