@@ -1,10 +1,9 @@
 
-const APE_PATH = "http://localhost/ape";
-const FIREBASE_URL = "https://ape.firebaseIO.com";
+var APE_PATH = "http://localhost/ape";
+var FIREBASE_URL = "https://ape.firebaseIO.com";
 
 function Ape(doc) {
   this._doc = doc;
-  this._current = null;
   this._counter = 1000;
 }
 Ape.prototype = {
@@ -53,36 +52,48 @@ Ape.prototype = {
   },
 
   // Similar to BrowserMirror, each element is an object of the following form:
-  // { name: tagName, id: jsmirrorId, attributes: {...}, children: [...] }
-  _serializeElement: function(el, inner) {
+  // { self: {name: tagName, id: jsmirrorId, attributes: {...}}, children: [...] }
+  _serializeElement: function(el) {
     if (!el.jsmirrorId) {
       el.jsmirrorId = this._makeId();
     }
+
     if (el.tagName == "CANVAS") {
       return {
-        name: "IMG",
-        id: el.jsmirrorId,
-        attributes: {src: el.toDataURL("image/png")},
-        children: []
+        self: {
+          name: "IMG",
+          id: el.jsmirrorId,
+          attributes: {src: el.toDataURL("image/png")}
+        }
+      };
+    }
+
+    if (el.tagName == "RAWSTRING") {
+      return {
+        self: {
+          name: "RAWSTRING",
+          id: el.jsmirrorId,
+          value: el.value
+        }
       };
     }
 
     var attrs = this._serializeAttributes(el);
     var children = this._serializeChildren(el);
     for (var i = 0; i < children.length; i++) {
-      if (typeof children[i] != "string") {
-        children[i] = this._serializeElement(children[i]);
-      }
+      children[i] = this._serializeElement(children[i]);
     }
 
     var ret = {
-      name: el.tagName,
-      id: el.jsmirrorId,
-      attributes: attrs,
-      children: children
+      self: {
+        name: el.tagName,
+        id: el.jsmirrorId,
+        attributes: attrs
+      }
     };
-    if (inner) {
-      ret.inner = el.innerHTML;
+
+    if (children && children.length) {
+      ret.children = children;
     }
 
     return ret;
@@ -112,8 +123,7 @@ Ape.prototype = {
     return attrs;
   },
 
-  // Returns an array of children, each item in the array can either be
-  // an element or a string, with no two adjacent strings.
+  // Returns an array of children, each item in the array is an element.
   _serializeChildren: function(el) {
     var ret = [];
 
@@ -129,9 +139,9 @@ Ape.prototype = {
           continue;
         }
         if (i && typeof ret[ret.length - 1] == "string") {
-          ret[ret.length - 1] += value;
+          ret[ret.length - 1].val += value;
         } else {
-          ret.push(value);
+          ret.push({tagName: "RAWSTRING", value: value});
         }
       } else if (child.nodeType == this._doc.ELEMENT_NODE) {
         ret.push(child);
@@ -142,14 +152,12 @@ Ape.prototype = {
   },
 
   serializeDocument: function() {
-    this._current = {
+    return {
       href: location.href,
       html: this._serializeAttributes(this._doc.childNodes[0]), // <html>
       head: this._serializeElement(this._doc.head), // <head>
       body: this._serializeElement(this._doc.body), // <body>
-      changes: [] // Queue of changes
     };
-    return this._current;
   },
 
 };
@@ -198,11 +206,7 @@ ApeServer.prototype = {
         // Setup timer to watch for subsequent changes.
         self._cb(self._id);
         setInterval(function() {
-          var old = JSON.stringify(self._ape._current);
-          var update = self._ape.serializeDocument();
-          if (JSON.stringify(update) != old) {
-            self._base.set(update); 
-          }
+          //
         }, 500);
       } else {
         self._cb();
@@ -240,42 +244,47 @@ ApeClient.prototype = {
   },
 
   _setElement: function(el, data) {
-    var children = data.children;
-
-    if (el.tagName != data.name) {
+    if (el.tagName != data.self.name) {
       el.parentNode.replaceChild(this._deserializeElement(data), el);
       return;
     }
 
-    this._setAttributes(el, data.attributes);
-    el.jsmirrorId = data.id;
-
-    if (children) {
-      var offset = 0;
-      for (var i = 0; i < children.length; i++) {
-        var childIndex = i + offset;
-        var existing = el.childNodes[childIndex];
-        if (!existing) {
-          el.appendChild(this._deserializeElement(children[i]));
-        } else if (existing.jsmirrorHide) {
-          offset++;
-          i--;
-          continue;
-        } else if (typeof children[i] == "string") {
-          if (existing.nodeType != document.TEXT_NODE) {
-            existing.parentNode.replaceChild(
-              document.createTextNode(children[i]), existing
-            );
-          } else {
-            existing.nodeValue = children[i];
-          }
-        } else {
-          this._setElement(existing, children[i]);
-        }
+    if (data.self.name == "RAWSTRING") {
+      if (el.nodeType != document.TEXT_NODE) {
+        el.parentNode.replaceChild(
+          document.createTextNode(data.self.value), el
+        );
+      } else {
+        el.nodeValue = data.self.value;
       }
     }
 
-    if (el.childNodes && children) {
+    if (data.self.attributes) {
+      this._setAttributes(el, data.self.attributes);
+    }
+    el.jsmirrorId = data.self.id;
+
+    var children = data.children;
+    if (!children || !children.length) {
+      return;
+    }
+
+    var offset = 0;
+    for (var i = 0; i < children.length; i++) {
+      var childIndex = i + offset;
+      var existing = el.childNodes[childIndex];
+      if (!existing) {
+        el.appendChild(this._deserializeElement(children[i]));
+      } else if (existing.jsmirrorHide) {
+        offset++;
+        i--;
+        continue;
+      } else {
+        this._setElement(existing, children[i]);
+      }
+    }
+
+    if (el.childNodes) {
       while (el.childNodes.length - offset > children.length) {
         var node = el.childNodes[children.length + offset];
         if (node.jsmirrorHide) {
@@ -332,26 +341,15 @@ ApeClient.prototype = {
   },
 
   _deserializeElement: function(data) {
-    if (typeof data == "string") {
-      return document.createTextNode(data);
+    if (data.self.name == "RAWSTRING") {
+      return document.createTextNode(data.self.value);
     }
 
     var el;
-    var attrs = data.attributes;
+    var attrs = data.self.attributes;
     var children = data.children;
 
-    if (data.name == "<!--COMMENT-->") {
-      if (children && children.length) {
-        var text = children[0];
-      } else {
-        var text = "";
-      }
-      el = document.createComment(text);
-      el.jsmirrorId = data.id;
-      return el;
-    }
-
-    el = document.createElement(data.name);
+    el = document.createElement(data.self.name);
     for (var i in attrs) {
       if (attrs.hasOwnProperty(i) && el.setAttribute) {
         el.setAttribute(i, attrs[i]);
@@ -369,7 +367,7 @@ ApeClient.prototype = {
       }
     }
 
-    el.jsmirrorId = data.id;
+    el.jsmirrorId = data.self.id;
     return el;
   },
 
