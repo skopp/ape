@@ -1,11 +1,12 @@
 
-const APE_PATH = "http://localhost/ape";
-const FIREBASE_URL = "https://ape.firebaseIO.com";
+var APE_PATH = "http://localhost/ape";
+var FIREBASE_URL = "https://ape.firebaseIO.com";
 
 function Ape(doc) {
   this._doc = doc;
   this._current = null;
   this._counter = 1000;
+  this._elements = {};
 }
 Ape.prototype = {
   _toSkipIfEmpty: {
@@ -44,7 +45,7 @@ Ape.prototype = {
     // Elements that can't be seen or are in the skipIfEmpty list.
     if ((el.style && el.style.display == "none") ||
         ((el.clientWidth === 0 && el.clientHeight === 0) &&
-        (!this._toSkipIfEmpty[el.tagName]) &&
+        (!this._toSkipIfEmpty[el.name]) &&
         (!el.childNodes.length))) {
       return true;
     }
@@ -52,40 +53,50 @@ Ape.prototype = {
     return false;
   },
 
+  _addElement: function(el, list) {
+    list[el.id] = el;
+    return el;
+  },
+
   // Similar to BrowserMirror, each element is an object of the following form:
   // { name: tagName, id: jsmirrorId, attributes: {...}, children: [...] }
-  _serializeElement: function(el, inner) {
+  _serializeElement: function(el, list) {
     if (!el.jsmirrorId) {
       el.jsmirrorId = this._makeId();
     }
+
+    if (el.tagName == "RAWSTRING") {
+      return this._addElement({
+        name: "RAWSTRING",
+        id: el.jsmirrorId,
+        val: el.val,
+        children: []
+      }, list);
+    }
+
     if (el.tagName == "CANVAS") {
-      return {
+      return this._addElement({
         name: "IMG",
         id: el.jsmirrorId,
         attributes: {src: el.toDataURL("image/png")},
         children: []
-      };
+      }, list);
     }
 
     var attrs = this._serializeAttributes(el);
     var children = this._serializeChildren(el);
     for (var i = 0; i < children.length; i++) {
-      if (typeof children[i] != "string") {
-        children[i] = this._serializeElement(children[i]);
-      }
+      children[i] = this._serializeElement(children[i], list);
     }
 
-    var ret = {
+    return this._addElement({
       name: el.tagName,
       id: el.jsmirrorId,
       attributes: attrs,
-      children: children
-    };
-    if (inner) {
-      ret.inner = el.innerHTML;
-    }
-
-    return ret;
+      children: children.map(function(child) {
+        return child.id;
+      })
+    }, list);
   },
 
   // Returns a dictionary of attributes with values.
@@ -112,8 +123,7 @@ Ape.prototype = {
     return attrs;
   },
 
-  // Returns an array of children, each item in the array can either be
-  // an element or a string, with no two adjacent strings.
+  // Returns an array of children, each item in the array is a node.
   _serializeChildren: function(el) {
     var ret = [];
 
@@ -131,7 +141,7 @@ Ape.prototype = {
         if (i && typeof ret[ret.length - 1] == "string") {
           ret[ret.length - 1] += value;
         } else {
-          ret.push(value);
+          ret.push({tagName: "RAWSTRING", val: value});
         }
       } else if (child.nodeType == this._doc.ELEMENT_NODE) {
         ret.push(child);
@@ -141,15 +151,20 @@ Ape.prototype = {
     return ret;
   },
 
+  pushChanges: function(base) {
+    var newBody = this.serializeDocument();
+  },
+
   serializeDocument: function() {
-    this._current = {
-      href: location.href,
-      html: this._serializeAttributes(this._doc.childNodes[0]), // <html>
-      head: this._serializeElement(this._doc.head), // <head>
-      body: this._serializeElement(this._doc.body), // <body>
-      changes: [] // Queue of changes
-    };
-    return this._current;
+    var elements = {};
+    var head = this._serializeElement(this._doc.head, elements);
+    var body = this._serializeElement(this._doc.body, elements);
+
+    elements.html = this._serializeAttributes(this._doc.childNodes[0]), // <html>
+    elements.head = head; // <head>
+    elements.body = body; // <body>
+
+    return elements;
   },
 
 };
@@ -191,18 +206,16 @@ ApeServer.prototype = {
 
     var self = this;
     this._ape = new Ape(document);
+    var doc = this._ape.serializeDocument();
+    console.log(doc);
 
     // First time upload of document.
-    this._base.set(this._ape.serializeDocument(), function(success) {
+    this._base.set(doc, function(success) {
       if (success) {
-        // Setup timer to watch for subsequent changes.
+        // Setup timer to watch and update subsequent changes.
         self._cb(self._id);
         setInterval(function() {
-          var old = JSON.stringify(self._ape._current);
-          var update = self._ape.serializeDocument();
-          if (JSON.stringify(update) != old) {
-            self._base.set(update); 
-          }
+          self._ape.pushChanges(self._base);
         }, 500);
       } else {
         self._cb();
@@ -228,54 +241,61 @@ ApeClient.prototype = {
     });
   },
 
-  _renderDoc: function(doc) {
-    if (!doc) {
+  _renderDoc: function(elements) {
+    if (!elements) {
       throw new Error("Empty document provided!");
     }
 
-    this._setAttributes(document.childNodes[0], doc.html);
-    this._setElement(document.head, doc.head);
-    this._setBase(doc.href);
-    this._setElement(document.body, doc.body);
+    document.head.innerHTML = "";
+    document.body.innerHTML = "";
+
+    this._setAttributes(document.childNodes[0], elements.html);
+    this._setElement(document.head, elements.head, elements);
+    this._setBase(elements.href);
+    this._setElement(document.body, elements.body, elements);
   },
 
-  _setElement: function(el, data) {
+  _setElement: function(el, data, list) {
     var children = data.children;
 
-    if (el.tagName != data.name) {
-      el.parentNode.replaceChild(this._deserializeElement(data), el);
+    if (el.name != data.name) {
+      el.parentNode.replaceChild(this._deserializeElement(data, list), el);
       return;
     }
 
     this._setAttributes(el, data.attributes);
     el.jsmirrorId = data.id;
 
-    if (children) {
-      var offset = 0;
-      for (var i = 0; i < children.length; i++) {
-        var childIndex = i + offset;
-        var existing = el.childNodes[childIndex];
-        if (!existing) {
-          el.appendChild(this._deserializeElement(children[i]));
-        } else if (existing.jsmirrorHide) {
-          offset++;
-          i--;
-          continue;
-        } else if (typeof children[i] == "string") {
-          if (existing.nodeType != document.TEXT_NODE) {
-            existing.parentNode.replaceChild(
-              document.createTextNode(children[i]), existing
-            );
-          } else {
-            existing.nodeValue = children[i];
-          }
+    if (!children) {
+      return;
+    }
+
+    var offset = 0;
+    for (var i = 0; i < children.length; i++) {
+      var childIndex = i + offset;
+      var existing = el.childNodes[childIndex];
+      var newChild = list[children[i]];
+
+      if (!existing) {
+        el.appendChild(this._deserializeElement(newChild, list));
+      } else if (existing.jsmirrorHide) {
+        offset++;
+        i--;
+        continue;
+      } else if (newChild.name == "RAWSTRING") {
+        if (existing.nodeType != document.TEXT_NODE) {
+          existing.parentNode.replaceChild(
+            document.createTextNode(newChild.val), existing
+          );
         } else {
-          this._setElement(existing, children[i]);
+          existing.nodeValue = newChild.val;
         }
+      } else {
+        this._setElement(existing, newChild, list);
       }
     }
 
-    if (el.childNodes && children) {
+    if (el.childNodes) {
       while (el.childNodes.length - offset > children.length) {
         var node = el.childNodes[children.length + offset];
         if (node.jsmirrorHide) {
@@ -331,25 +351,14 @@ ApeClient.prototype = {
     document.head.appendChild(base);
   },
 
-  _deserializeElement: function(data) {
-    if (typeof data == "string") {
-      return document.createTextNode(data);
+  _deserializeElement: function(data, list) {
+    if (data.name == "RAWSTRING") {
+      return document.createTextNode(data.val);
     }
 
     var el;
     var attrs = data.attributes;
     var children = data.children;
-
-    if (data.name == "<!--COMMENT-->") {
-      if (children && children.length) {
-        var text = children[0];
-      } else {
-        var text = "";
-      }
-      el = document.createComment(text);
-      el.jsmirrorId = data.id;
-      return el;
-    }
 
     el = document.createElement(data.name);
     for (var i in attrs) {
@@ -360,11 +369,11 @@ ApeClient.prototype = {
 
     if (children) {
       for (var i = 0; i < children.length; i++) {
-        var o = children[i];
-        if (typeof o == "string") {
-          el.appendChild(document.createTextNode(o));
+        var o = list[children[i]];
+        if (o.name == "RAWSTRING") {
+          el.appendChild(document.createTextNode(o.val));
         } else {
-          el.appendChild(this._deserializeElement(o));
+          el.appendChild(this._deserializeElement(o, list));
         }
       }
     }
