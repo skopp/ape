@@ -68,20 +68,12 @@ Ape.prototype = {
       };
     }
 
-    if (el.tagName == "RAWSTRING") {
-      return {
-        self: {
-          name: "RAWSTRING",
-          id: el.jsmirrorId,
-          value: el.value
-        }
-      };
-    }
-
     var attrs = this._serializeAttributes(el);
     var children = this._serializeChildren(el);
     for (var i = 0; i < children.length; i++) {
-      children[i] = this._serializeElement(children[i]);
+      if (typeof children[i] != "string") {
+        children[i] = this._serializeElement(children[i]);
+      }
     }
 
     var ret = {
@@ -141,7 +133,7 @@ Ape.prototype = {
         if (i && typeof ret[ret.length - 1] == "string") {
           ret[ret.length - 1].val += value;
         } else {
-          ret.push({tagName: "RAWSTRING", value: value});
+          ret.push(value);
         }
       } else if (child.nodeType == this._doc.ELEMENT_NODE) {
         ret.push(child);
@@ -206,7 +198,7 @@ ApeServer.prototype = {
         // Setup timer to watch for subsequent changes.
         self._cb(self._id);
         setInterval(function() {
-          //
+          self._base.set(self._ape.serializeDocument());
         }, 500);
       } else {
         self._cb();
@@ -226,8 +218,183 @@ function ApeClient(id) {
 ApeClient.prototype = {
   start: function() {
     var self = this;
-    this._base.on("value", function(snapshot) {
-      // Works for both first time rendering and updates.
+
+    // First time set, then setup listeners for updates.
+    this._base.once("value", function(snapshot) {
+      var doc = snapshot.val();
+      var baseRef = snapshot.ref();
+
+      // For <html> and <head> we do full resets always.
+      var html = baseRef.child("html");
+      html.on("value", function(htmlSnap) {
+        self._setAttributes(document.childNodes[0], htmlSnap.val());
+      });
+
+      var head = baseRef.child("head");
+      head.on("value", function(headSnap) {
+        self._setElement(document.head, headSnap.val());
+      });
+
+      // For the body, we setup listeners for every node and their children.
+      document.body.removeChild(document.getElementById("loading"));
+      document.body.jsmirrorId = doc.body.self.id;
+      self._setupListeners(baseRef.child("body"), doc.body.self.id);
+    });
+
+    // Refresh the whole page once in every 10 seconds.
+    setInterval(this._resetDoc, 10000);
+  },
+
+  _getElementByMirrorId: function(id) {
+    var all = document.getElementsByTagName('*');
+    for (var i = 0; i < all.length; i++) {
+      if (all[i].jsmirrorId && all[i].jsmirrorId == id) {
+        return all[i];
+      }
+    }
+  },
+
+  _setupListeners: function(node, nodeId) {
+    var self = this;
+
+    // First listen for self changes.
+    var selfNode = node.child("self");
+    selfNode.on("child_changed", function(selfSnap) {
+      var newBody = selfSnap.val();
+      var existing = self._getElementByMirrorId(newBody.id);
+      if (!existing) {
+        // Reset.
+        self._resetDoc();
+      } else if (existing.tagName != newBody.name) {
+        // Element changed quite a bit.
+        node.once("value", function(nodeSnap) {
+          self._setElement(existing, nodeSnap.val());
+        });
+      } else {
+        // Only attributes changed.
+        self._setAttributes(existing, newBody.attributes);
+      }
+    });
+
+    // Setup listeners for children.
+    var childNodes = node.child("children");
+    childNodes.on("child_added", function(newChildSnap) {
+      self._addElement(newChildSnap, nodeId);
+    });
+
+    childNodes.on("child_removed", function(oldChildSnap) {
+      self._removeElement(oldChildSnap, nodeId);
+    });
+  },
+
+  _addElement: function(elSnapshot, parentId) {
+    // Add the element and setup listeners for itself (and its children).
+    var parentNode = this._getElementByMirrorId(parentId);
+    if (!parentNode) {
+      console.log("Child added to non existent parent! " + parentId);
+      return;
+    }
+
+    // Arrays in Firebase are just objects with indexes as keys.
+    var newElIndex = elSnapshot.name();
+
+    // Find the element right after this so we can insertBefore it.
+    var newElRef = elSnapshot.ref();
+    var parentRef = newElRef.parent();
+
+    // We have to get the next two, in case the immediate next is a text node.
+    var elIndex = parseInt(newElIndex, 10);
+    var nextElRef = parentRef.child((elIndex + 1) + "");
+    var next2ElRef = parentRef.child((elIndex + 2) + "");
+
+    var self = this;
+    nextElRef.once("value", function(nextElSnap) {
+      next2ElRef.once("value", function(next2ElSnap) {
+        var newEl = elSnapshot.val();
+
+        var toAdd = null;
+        if (typeof newEl == "string") {
+          toAdd = document.createTextNode(newEl);
+        } else {
+          toAdd = self._deserializeElement(newEl, true);
+        }
+
+        if (!nextElSnap || !nextElSnap.val()) {
+          parentNode.appendChild(toAdd);
+        } else {
+          var nextElSnapVal = nextElSnap.val();
+          if (!nextElSnapVal.self) {
+            // 2nd node is guaranteed to be non-text (unless it's the last).
+            nextElSnapVal = next2ElSnap.val();
+            if (!nextElSnapVal) {
+              insertBefore = parentNode.lastChild;
+            } else {
+              insertBefore = self._getElementByMirrorId(nextElSnapVal.self.id);
+            }
+          } else {
+            insertBefore = self._getElementByMirrorId(nextElSnapVal.self.id)
+          }
+
+          try {
+            parentNode.insertBefore(toAdd, insertBefore);
+          } catch(e) {
+            console.log("Could not remove" + e);
+          }
+        }
+
+        if (typeof newEl != "string") {
+          self._setupListeners(newElRef, newEl.self.id);
+        }
+      });
+    });
+  },
+
+  _removeElement: function(elSnapshot, parentId) {
+    var elSnapVal = elSnapshot.val();
+    
+    if (typeof elSnapVal == "string") {
+      // A text node needs to be removed.
+      var parentNode = this._getElementByMirrorId(parentId);
+      if (!parentNode) {
+        console.log("Parent does not exist ! " + parentId);
+        return;
+      }
+
+      // Go through each text node until we find the one we want and remove it.
+      for (var i = 0; i < parentNode.childNodes.length; i++) {
+        var node = parentNode.childNodes[i];
+        if (node.nodeType == document.TEXT_NODE && node.nodeValue == elSnapVal) {
+          node.parentNode.removeChild(node);
+          return;
+        }
+      }
+
+      console.log("Could not find text node " + elSnapVal + " in parent " + parentId);
+      return;
+    }
+
+    var el = this._getElementByMirrorId(elSnapVal.self.id);
+    if (!el) {
+      console.log("Element to be removed does not exist! " + elSnapVal.self.id);
+      return;
+    }
+    if (el.parentNode) {
+      el.parentNode.removeChild(el);
+    }
+
+    // Remove listeners that may have been setup.
+    var elRef = elSnapshot.ref();
+    var elRefSelf = elRef.child("self");
+    var elRefChildren = elRef.child("children");
+
+    elRefSelf.off("child_changed");
+    elRefChildren.off("child_added");
+    elRefChildren.off("child_removed");
+  },
+
+  _resetDoc: function() {
+    var self = this;
+    this._base.once("value", function(snapshot) {
       self._renderDoc(snapshot.val());
     });
   },
@@ -247,16 +414,6 @@ ApeClient.prototype = {
     if (el.tagName != data.self.name) {
       el.parentNode.replaceChild(this._deserializeElement(data), el);
       return;
-    }
-
-    if (data.self.name == "RAWSTRING") {
-      if (el.nodeType != document.TEXT_NODE) {
-        el.parentNode.replaceChild(
-          document.createTextNode(data.self.value), el
-        );
-      } else {
-        el.nodeValue = data.self.value;
-      }
     }
 
     if (data.self.attributes) {
@@ -279,6 +436,14 @@ ApeClient.prototype = {
         offset++;
         i--;
         continue;
+      } else if (typeof children[i] == "string") {
+        if (existing.nodeType != document.TEXT_NODE) {
+          existing.parentNode.replaceChild(
+            document.createTextNode(children[i]), existing
+          );
+        } else {
+          existing.nodeValue = children[i];
+        }
       } else {
         this._setElement(existing, children[i]);
       }
@@ -340,9 +505,9 @@ ApeClient.prototype = {
     document.head.appendChild(base);
   },
 
-  _deserializeElement: function(data) {
-    if (data.self.name == "RAWSTRING") {
-      return document.createTextNode(data.self.value);
+  _deserializeElement: function(data, ignoreChildren) {
+    if (typeof data == "string") {
+      return document.createTextNode(data);
     }
 
     var el;
@@ -356,7 +521,7 @@ ApeClient.prototype = {
       }
     }
 
-    if (children) {
+    if (!ignoreChildren && children) {
       for (var i = 0; i < children.length; i++) {
         var o = children[i];
         if (typeof o == "string") {
