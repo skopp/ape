@@ -143,13 +143,21 @@ Ape.prototype = {
     return ret;
   },
 
-  serializeDocument: function() {
+  _serializeDocument: function() {
     return {
       href: location.href,
       html: this._serializeAttributes(this._doc.childNodes[0]), // <html>
       head: this._serializeElement(this._doc.head), // <head>
       body: this._serializeElement(this._doc.body), // <body>
     };
+  },
+
+  sendFullDocument: function(base, cb) {
+    base.set(this._serializeDocument(), cb);
+  },
+
+  sendDiffDocument: function(base) {
+    this.sendFullDocument(base);
   },
 
 };
@@ -193,13 +201,11 @@ ApeServer.prototype = {
     this._ape = new Ape(document);
 
     // First time upload of document.
-    this._base.set(this._ape.serializeDocument(), function(success) {
+    this._ape.sendFullDocument(this._base, function(success) {
       if (success) {
         // Setup timer to watch for subsequent changes.
         self._cb(self._id);
-        setInterval(function() {
-          self._base.set(self._ape.serializeDocument());
-        }, 500);
+        setInterval(self._ape.sendDiffDocument.bind(self._ape), 500, self._base);
       } else {
         self._cb();
       }
@@ -242,7 +248,7 @@ ApeClient.prototype = {
     });
 
     // Refresh the whole page once in every 10 seconds.
-    setInterval(this._resetDoc, 10000);
+    setInterval(this._resetDoc.bind(this), 10000);
   },
 
   _getElementByMirrorId: function(id) {
