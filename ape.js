@@ -5,6 +5,7 @@ var FIREBASE_URL = "https://ape.firebaseIO.com";
 function Ape(doc) {
   this._doc = doc;
   this._counter = 1000;
+  this._current = null;
 }
 Ape.prototype = {
   _toSkipIfEmpty: {
@@ -144,20 +145,122 @@ Ape.prototype = {
   },
 
   _serializeDocument: function() {
-    return {
+    this._current = {
       href: location.href,
       html: this._serializeAttributes(this._doc.childNodes[0]), // <html>
       head: this._serializeElement(this._doc.head), // <head>
       body: this._serializeElement(this._doc.body), // <body>
     };
+    return this._current;
+  },
+
+  _diffElement: function(previous, current, base) {
+    // Diff the attributes first.
+    if (previous.self.id != current.self.id ||
+        previous.self.name != current.self.name) {
+      // Whoah, just reset the whole thing.
+      base.set(current);
+      return;
+    }
+
+    var attrs = current.self.attributes;
+    if (JSON.stringify(previous.self.attributes) != JSON.stringify(attrs)) {
+      var attrsRef = base.child("self").child("attributes");
+      attrsRef.set(attrs);
+    }
+
+    // Now, diff the children in turn.
+    var matchedSet = [];
+    if (current.children && current.children.length) {
+      for (var i = 0; i < current.children.length; i++) {
+        var node = current.children[i];
+
+        // Search for this node in the previous child set.
+        var found = false;
+        for (var j = 0; i < previous.children.length; j++) {
+          var compare = previous.children[i];
+          if (compare.self.id == node.self.id) {
+            found = compare;
+            matchedSet.push(compare.self.id);
+            break;
+          }
+        }
+
+        if (found) {
+          // Diff the two children.
+          this._diffElement(found, node, base.child("children").child(j));
+        } else {
+          // New element. XXX
+        }
+      }
+    }
+  },
+
+  _setWithChildren: function(base, node) {
+    base.child("self").set(node.self);
+
+    if (!node.children || !node.children.length) {
+      return;
+    }
+
+    var children = base.child("children");
+    for (var i = 0; i < node.children.length; i++) {
+      var child = node.children[i];
+      var childRef = children.child(i + "p");
+
+      // Remove the children's children before setting, will be added back.
+      var childrensChildren = child.children;
+      delete child.children;
+      childRef.setWithPriority(child, i);
+
+      if (typeof child != "string") {
+        // Recurse, this time with children.
+        child.children = childrensChildren;
+        this._setWithChildren(childRef, child);
+      }
+    }
   },
 
   sendFullDocument: function(base, cb) {
-    base.set(this._serializeDocument(), cb);
+    base.set({});
+    var current = this._serializeDocument();
+
+    // Convert all the children from an array to dictionary with priorities.
+    base.child("href").set(current.href);
+    base.child("html").set(current.html);
+    this._setWithChildren(base.child("head"), current.head);
+    this._setWithChildren(base.child("body"), current.body);
+
+    if (cb) {
+      // TODO. Actually call when succeeded.
+      cb(true);
+    }
   },
 
   sendDiffDocument: function(base) {
     this.sendFullDocument(base);
+    /*
+    var previous = this._current;
+    var current = this._serializeDocument();
+
+    // For <html> and <head> just refresh the whole thing since they are small.
+    if (JSON.stringify(previous.html) != JSON.stringify(current.html)) {
+      var html = base.child("html");
+      html.set(current.html);
+    }
+
+    if (JSON.stringify(previous.head) != JSON.stringify(current.head)) {
+      var head = base.child("head");
+      head.set(current.head);
+    }
+
+    // No changes to <body>, just return.
+    if (JSON.stringify(previous.body) == JSON.stringify(current.body)) {
+      return;
+    }
+
+    this._diffElement(previous.body, current.body, base.child("body"));
+    */
   },
 
 };
@@ -238,7 +341,7 @@ ApeClient.prototype = {
 
       var head = baseRef.child("head");
       head.on("value", function(headSnap) {
-        self._setElement(document.head, headSnap.val());
+        self._setElement(document.head, headSnap);
       });
 
       // For the body, we setup listeners for every node and their children.
@@ -274,7 +377,7 @@ ApeClient.prototype = {
       } else if (existing.tagName != newBody.name) {
         // Element changed quite a bit.
         node.once("value", function(nodeSnap) {
-          self._setElement(existing, nodeSnap.val());
+          self._setElement(existing, nodeSnap);
         });
       } else {
         // Only attributes changed.
@@ -322,7 +425,7 @@ ApeClient.prototype = {
         if (typeof newEl == "string") {
           toAdd = document.createTextNode(newEl);
         } else {
-          toAdd = self._deserializeElement(newEl, true);
+          toAdd = self._deserializeElement(elSnapshot, true);
         }
 
         if (!nextElSnap || !nextElSnap.val()) {
@@ -401,24 +504,26 @@ ApeClient.prototype = {
   _resetDoc: function() {
     var self = this;
     this._base.once("value", function(snapshot) {
-      self._renderDoc(snapshot.val());
+      self._renderDoc(snapshot);
     });
   },
 
-  _renderDoc: function(doc) {
-    if (!doc) {
+  _renderDoc: function(snapshot) {
+    if (!snapshot) {
       throw new Error("Empty document provided!");
     }
 
+    var doc = snapshot.val();
     this._setAttributes(document.childNodes[0], doc.html);
-    this._setElement(document.head, doc.head);
+    this._setElement(document.head, snapshot.child("head"));
     this._setBase(doc.href);
-    this._setElement(document.body, doc.body);
+    this._setElement(document.body, snapshot.child("body"));
   },
 
-  _setElement: function(el, data) {
+  _setElement: function(el, snapshot) {
+    var data = snapshot.val();
     if (el.tagName != data.self.name) {
-      el.parentNode.replaceChild(this._deserializeElement(data), el);
+      el.parentNode.replaceChild(this._deserializeElement(snapshot), el);
       return;
     }
 
@@ -427,33 +532,35 @@ ApeClient.prototype = {
     }
     el.jsmirrorId = data.self.id;
 
-    var children = data.children;
-    if (!children || !children.length) {
+    var children = snapshot.child("children");
+    if (!children) {
       return;
     }
 
+    var i = 0;
     var offset = 0;
-    for (var i = 0; i < children.length; i++) {
+    var self = this;
+    children.forEach(function(child) {
       var childIndex = i + offset;
       var existing = el.childNodes[childIndex];
       if (!existing) {
-        el.appendChild(this._deserializeElement(children[i]));
+        el.appendChild(self._deserializeElement(child));
       } else if (existing.jsmirrorHide) {
         offset++;
         i--;
-        continue;
-      } else if (typeof children[i] == "string") {
+      } else if (typeof child.val() == "string") {
         if (existing.nodeType != document.TEXT_NODE) {
           existing.parentNode.replaceChild(
-            document.createTextNode(children[i]), existing
+            document.createTextNode(child.val()), existing
           );
         } else {
-          existing.nodeValue = children[i];
+          existing.nodeValue = child.val();
         }
       } else {
-        this._setElement(existing, children[i]);
+        self._setElement(existing, child);
       }
-    }
+      i++;
+    });
 
     if (el.childNodes) {
       while (el.childNodes.length - offset > children.length) {
@@ -511,14 +618,14 @@ ApeClient.prototype = {
     document.head.appendChild(base);
   },
 
-  _deserializeElement: function(data, ignoreChildren) {
+  _deserializeElement: function(snapshot, ignoreChildren) {
+    var data = snapshot.val();
     if (typeof data == "string") {
       return document.createTextNode(data);
     }
 
     var el;
     var attrs = data.self.attributes;
-    var children = data.children;
 
     el = document.createElement(data.self.name);
     for (var i in attrs) {
@@ -527,15 +634,16 @@ ApeClient.prototype = {
       }
     }
 
+    var children = snapshot.child("children");
     if (!ignoreChildren && children) {
-      for (var i = 0; i < children.length; i++) {
-        var o = children[i];
-        if (typeof o == "string") {
-          el.appendChild(document.createTextNode(o));
+      var self = this;
+      children.forEach(function(child) {
+        if (typeof child.val() == "string") {
+          el.appendChild(document.createTextNode(child.val()));
         } else {
-          el.appendChild(this._deserializeElement(o));
+          el.appendChild(self._deserializeElement(child));
         }
-      }
+      });
     }
 
     el.jsmirrorId = data.self.id;
