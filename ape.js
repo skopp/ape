@@ -170,29 +170,82 @@ Ape.prototype = {
     }
 
     // Now, diff the children in turn.
+    var self = this;
+    var childRef = base.child("children");
+    childRef.once("value", function(childSnap) {
+      self._diffChildren(current.children, childSnap, childRef);
+    });
+  },
+
+  _diffChildren: function(current, baseSnap, base) {
     var matchedSet = [];
+
+    // Construct a list of strings by value from previous set.
+    var nodeRefById = {};
+    var stringRefByVal = {};
+    baseSnap.forEach(function(child) {
+      var childVal = child.val();
+      if (typeof childVal == "string") {
+        stringRefByVal[childVal] = child.ref();
+      } else {
+        nodeRefById[childVal.self.id] = child.ref();
+      }
+    });
+
     if (current.children && current.children.length) {
       for (var i = 0; i < current.children.length; i++) {
+        // Search for this node in the previous child set.
         var node = current.children[i];
 
-        // Search for this node in the previous child set.
         var found = false;
-        for (var j = 0; i < previous.children.length; j++) {
-          var compare = previous.children[i];
-          if (compare.self.id == node.self.id) {
-            found = compare;
-            matchedSet.push(compare.self.id);
-            break;
+        if (typeof node == "string") {
+          if (stringRefByVal[node]) {
+            found = true;
+            delete stringRefByVal[node];
+          }
+        } else {
+          if (baseSnap.hasChild(node.self.id)) {
+            // Diff the two children.
+            found = true;
+            var prevSnap = baseSnap.child(node.self.id);
+            this._diffElement(prevSnap.val(), node, prevSnap.ref());
+            delete nodeRefById[node.self.id];
           }
         }
 
-        if (found) {
-          // Diff the two children.
-          this._diffElement(found, node, base.child("children").child(j));
-        } else {
-          // New element. XXX
+        if (!found) {
+          // New element.
+          var refId;
+          if (typeof node != "string") {
+            refId = node.self.id;
+          } else {
+            refId = this._makeId();
+          }
+
+          // Get the current priority list so we can determine the new node's position.
+          var index = 0;
+          var priority = i;
+          var prevPriority = 0;
+          baseSnap.forEach(function(child) {
+            var curPriority = child.getPriority();
+            if (index == priority) {
+              priority = (curPriority - prevPriority) / 2;
+            }
+            prevPriority = curPriority;
+            index++;
+          });
+          base.child(refId).setWithPriority(node, priority);
         }
       }
+    }
+
+    // Delete all remaining old elements.
+    var key;
+    for (key in nodeRefById) {
+      nodeRefById[key].remove();
+    }
+    for (key in stringRefByVal) {
+      stringRefByVal[key].remove();
     }
   },
 
@@ -206,7 +259,15 @@ Ape.prototype = {
     var children = base.child("children");
     for (var i = 0; i < node.children.length; i++) {
       var child = node.children[i];
-      var childRef = children.child(i + "p");
+
+      var childName;
+      if (typeof child != "string") {
+        childName = child.self.id;
+      } else {
+        childName = this._makeId();
+      }
+
+      var childRef = children.child(childName);
 
       // Remove the children's children before setting, will be added back.
       var childrensChildren = child.children;
@@ -222,7 +283,6 @@ Ape.prototype = {
   },
 
   sendFullDocument: function(base, cb) {
-    base.set({});
     var current = this._serializeDocument();
 
     // Convert all the children from an array to dictionary with priorities.
@@ -238,8 +298,6 @@ Ape.prototype = {
   },
 
   sendDiffDocument: function(base) {
-    this.sendFullDocument(base);
-    /*
     var previous = this._current;
     var current = this._serializeDocument();
 
@@ -260,7 +318,6 @@ Ape.prototype = {
     }
 
     this._diffElement(previous.body, current.body, base.child("body"));
-    */
   },
 
 };
@@ -345,13 +402,17 @@ ApeClient.prototype = {
       });
 
       // For the body, we setup listeners for every node and their children.
-      document.body.removeChild(document.getElementById("loading"));
-      document.body.jsmirrorId = doc.body.self.id;
-      self._setupListeners(baseRef.child("body"), doc.body.self.id);
+      var body = baseRef.child("body");
+      body.once("value", function(bodySnap) {
+        document.body.removeChild(document.getElementById("loading"));
+        var bodyId = bodySnap.val().self.id;
+        document.body.jsmirrorId = bodyId;
+        self._setupListeners(body, bodyId);
+      });
     });
 
     // Refresh the whole page once in every 10 seconds.
-    setInterval(this._resetDoc.bind(this), 10000);
+    //setInterval(this._resetDoc.bind(this), 10000);
   },
 
   _getElementByMirrorId: function(id) {
@@ -419,9 +480,9 @@ ApeClient.prototype = {
     var self = this;
     nextElRef.once("value", function(nextElSnap) {
       next2ElRef.once("value", function(next2ElSnap) {
+        var toAdd = null;
         var newEl = elSnapshot.val();
 
-        var toAdd = null;
         if (typeof newEl == "string") {
           toAdd = document.createTextNode(newEl);
         } else {
