@@ -106,6 +106,10 @@ Ape.prototype = {
         } else {
           attrs[name] = el.attributes[i].nodeValue;
         }
+        // Firebase does not allow undefined values.
+        if (!attrs[name]) {
+          delete attrs[name];
+        }
       }
     }
 
@@ -204,7 +208,7 @@ Ape.prototype = {
             delete stringRefByVal[node];
           }
         } else {
-          if (baseSnap.hasChild(node.self.id)) {
+          if (nodeRefById[node.self.id]) {
             // Diff the two children.
             found = true;
             var prevSnap = baseSnap.child(node.self.id);
@@ -402,12 +406,12 @@ ApeClient.prototype = {
       });
 
       // For the body, we setup listeners for every node and their children.
-      var body = baseRef.child("body");
-      body.once("value", function(bodySnap) {
+      var bodySelf = baseRef.child("body").child("self");
+      bodySelf.once("value", function(bodySelfSnap) {
         document.body.removeChild(document.getElementById("loading"));
-        var bodyId = bodySnap.val().self.id;
+        var bodyId = bodySelfSnap.val().id;
         document.body.jsmirrorId = bodyId;
-        self._setupListeners(body, bodyId);
+        self._setupListeners(bodySelf.parent(), bodyId);
       });
     });
 
