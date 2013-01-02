@@ -20,5 +20,4 @@ Quick Start
 
 License
 -------
-No part of this project may be copied, modified, propagated, or distributed
-except according to terms in the accompanying LICENSE file (MIT licensed).
+[MIT](http://firebase.mit-license.org).
